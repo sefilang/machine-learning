@@ -37,6 +37,7 @@ local trainLabels = trainset.label:float():add(1)
 local testData = testset.data:float()
 local testLabels = testset.label:float():add(1)
 
+
 --  ****************************************************************
 -- Training a ConvNet on Cifar10
 --  ****************************************************************
@@ -48,9 +49,11 @@ local mean = {}  -- store the mean, to normalize the test set in the future
 local stdv  = {} -- store the standard-deviation for the future
 for i=1,3 do -- over each image channel
     mean[i] = trainData[{ {}, {i}, {}, {}  }]:mean() -- mean estimation
+    print('Channel ' .. i .. ', Mean: ' .. mean[i])
     trainData[{ {}, {i}, {}, {}  }]:add(-mean[i]) -- mean subtraction
     
     stdv[i] = trainData[{ {}, {i}, {}, {}  }]:std() -- std estimation
+    print('Channel ' .. i .. ', Standard Deviation: ' .. stdv[i])
     trainData[{ {}, {i}, {}, {}  }]:div(stdv[i]) -- std scaling
 end
 
@@ -64,24 +67,33 @@ end
 
 
 --  ****************************************************************
---  Define neural network
+--  Define our neural network
 --  ****************************************************************
 
 local model = nn.Sequential()
-model:add(cudnn.SpatialConvolution(3, 60, 5, 5,1,1,2,2)) -- 3 input image channel, 32 output channels, 5x5 convolution kernel
-model:add(nn.SpatialBatchNormalization(60,1e-3))
+model:add(cudnn.SpatialConvolution(3, 64, 5, 5,1,1,2,2)) -- 3 input image channel, 32 output channels, 5x5 convolution kernel
+model:add(nn.SpatialBatchNormalization(64,1e-3))
 model:add(cudnn.ReLU(true))
-                
-model:add(cudnn.SpatialConvolution(60,42,1,1))
+
+        
+model:add(cudnn.SpatialConvolution(64,42,1,1))
 model:add(nn.SpatialBatchNormalization(42,1e-3))
 model:add(cudnn.ReLU(true))
 
-model:add(cudnn.SpatialConvolution(42,30,3,3,1,1,1,1))
-model:add(nn.SpatialBatchNormalization(30,1e-3))
-model:add(cudnn.ReLU(true))
+model:add(FilterConcat(
+{
+Tower({cudnn.SpatialConvolution(42, 18, 1, 1), -- 3 input image channel, 32 output channels, 5x5 convolution kernel
+nn.SpatialBatchNormalization(18,1e-3),
+cudnn.ReLU(true)}),
+Tower({cudnn.SpatialConvolution(42, 18, 3, 3,1,1,1,1), -- 3 input image channel, 32 output channels, 5x5 convolution kernel
+nn.SpatialBatchNormalization(18,1e-3),
+cudnn.ReLU(true)})
 
-model:add(nn.SpatialMaxPooling(3,3,2,2):ceil())
-model:add(nn.Dropout(0.3))
+}
+))  
+model:add(cudnn.SpatialConvolution(36, 30, 1, 1,1,1))
+model:add(nn.SpatialAveragePooling(3,3,2,2):ceil())
+model:add(nn.Dropout(0.2))
 
 model:add(FilterConcat(
 {
@@ -99,28 +111,36 @@ model:add(nn.SpatialBatchNormalization(46,1e-3))
 model:add(cudnn.ReLU(true))
 
 model:add(nn.SpatialAveragePooling(3,3,2,2):ceil())
-model:add(nn.Dropout(0.3))
+model:add(nn.Dropout(0.2))
 
-model:add(cudnn.SpatialConvolution(46, 26, 3, 3,1,1,1,1)) -- 3 input image channel, 32 output channels, 5x5 convolution kernel
-model:add(nn.SpatialBatchNormalization(26,1e-3))
+model:add(FilterConcat(
+{
+Tower({cudnn.SpatialConvolution(46, 18, 1, 1), -- 3 input image channel, 32 output channels, 5x5 convolution kernel
+nn.SpatialBatchNormalization(18,1e-3),
+cudnn.ReLU(true)}),
+Tower({cudnn.SpatialConvolution(46, 18, 3, 3,1,1,1,1), -- 3 input image channel, 32 output channels, 5x5 convolution kernel
+nn.SpatialBatchNormalization(18,1e-3),
+cudnn.ReLU(true)})
+
+}
+))  
+
+
+
+model:add(cudnn.SpatialConvolution(36, 34, 3, 3,1,1,1,1)) -- 3 input image channel, 32 output channels, 5x5 convolution kernel
+model:add(nn.SpatialBatchNormalization(34,1e-3))
 model:add(cudnn.ReLU(true))
 
-model:add(cudnn.SpatialConvolution(26, 30, 3, 3,1,1,1,1)) -- 3 input image channel, 32 output channels, 5x5 convolution kernel
-model:add(nn.SpatialBatchNormalization(30,1e-3))
-model:add(cudnn.ReLU(true))
 
-
-model:add(cudnn.SpatialConvolution(30, 10, 1, 1,1,1)) -- 3 input image channel, 32 output channels, 5x5 convolution kernel
+model:add(cudnn.SpatialConvolution(34, 10, 1, 1,1,1)) -- 3 input image channel, 32 output channels, 5x5 convolution kernel
 model:add(nn.SpatialBatchNormalization(10,1e-3))
 model:add(cudnn.ReLU(true))
 
 model:add(nn.SpatialMaxPooling(8,8,1,1):ceil())
 
 model:add(nn.View(10))
-model:add(nn.LogSoftMax())                     -- converts the output to a log-probability. Useful for classificati
-
-model:cuda()
-criterion = nn.ClassNLLCriterion():cuda()
+model:add(nn.LogSoftMax())
+                     -- converts the output to a log-probability. Useful for classificati
 
 for k,v in pairs(model:findModules(('%s.SpatialConvolution'):format(backend_name))) do
 
@@ -129,6 +149,9 @@ for k,v in pairs(model:findModules(('%s.SpatialConvolution'):format(backend_name
   v.bias:zero()
 
 end
+
+model:cuda()
+criterion = nn.ClassNLLCriterion():cuda()
 
 w, dE_dw = model:getParameters()
 
@@ -184,17 +207,37 @@ function forwardNet(data,labels, train)
 end
 
 
+
+function plotError(trainError, testError, title1)
+	require 'gnuplot'
+	local range = torch.range(1, trainError:size(1))
+	gnuplot.pngfigure('testVsTrainErrorFinall.png')
+	gnuplot.plot({'trainError',trainError},{'testError',testError})
+	gnuplot.xlabel('epochs')
+	gnuplot.ylabel('Error')
+	gnuplot.plotflush()
+	
+
+end
+function plotLoss(trainLoss, testLoss, title2)
+	require 'gnuplot'
+	local range = torch.range(1, trainError:size(1))
+	gnuplot.pngfigure('testVsTrainLossFinall.png')
+	gnuplot.plot({'trainLoss',trainLoss},{'testLoss',testLoss})
+	gnuplot.xlabel('epochs')
+	gnuplot.ylabel('Loss')
+	gnuplot.plotflush()
+
+
+end
 require 'image'
 require 'nn'
 
 
 local function randomcrop(im , pad, randomcrop_type)
    if randomcrop_type == 'reflection' then
-      -- Each feature map of a given input is padded with the replication of the input boundary
       module = nn.SpatialReflectionPadding(pad,pad,pad,pad):float() 
    elseif randomcrop_type == 'zero' then
-      -- Each feature map of a given input is padded with specified number of zeros.
-	  -- If padding values are negative, then input is cropped.
       module = nn.SpatialZeroPadding(pad,pad,pad,pad):float()
    end
 	
@@ -202,12 +245,13 @@ local function randomcrop(im , pad, randomcrop_type)
    local x = torch.random(1,pad*2 + 1)
    local y = torch.random(1,pad*2 + 1)
 
+
    return padded:narrow(3,x,im:size(3)):narrow(2,y,im:size(2))
 end
 
- -- data augmentation module
---{'airplane', 'automobile', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck'}
+
  local function updateOutput(input,labels)
+    --if self.train then
       local permutation = torch.randperm(input:size(1))
       for i=1,input:size(1) do
         if 0 == permutation[i] % 3  then input[i]=image.hflip(input[i]) end -- need to define f
@@ -217,24 +261,29 @@ end
 		--if (3 == permutation[i] % 6  and labels[i] ~= 'airplane' and labels[i] ~= 'automobile' and labels[i] ~= 'ship' and labels[i] ~= 'truck') then input[i]=image.rotate(input[i],0.38) end 
 		--if (4 == permutation[i] % 6  and labels[i] ~= 'airplane' and labels[i] ~= 'automobile' and labels[i] ~= 'ship' and labels[i] ~= 'truck') then input[i]=image.rotate(input[i],-0.38) end
       end
+    --end
 	
+    --output:set(input)
     return input
   end
 
 ---------------------------------------------------------------------
 
-epochs =600
+epochs = 600
 trainLoss = torch.Tensor(epochs)
 testLoss = torch.Tensor(epochs)
 trainError = torch.Tensor(epochs)
 testError = torch.Tensor(epochs)
 
 
+
 timer = torch.Timer()
+
 
 for e = 1, epochs do
     trainData, trainLabels = shuffle(trainData, trainLabels) --shuffle training data
     trainLoss[e], trainError[e] = forwardNet(updateOutput(trainData,trainLabels), trainLabels, true)
     testLoss[e], testError[e], confusion = forwardNet(testData, testLabels, false)
+
 end
 
